@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>作業員リアルタイム配置マップ</title>
+  <meta name="robots" content="noindex,nofollow">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; font-family: "Helvetica Neue", Arial, "メイリオ", meiryo, sans-serif; background-color: #f8f9fa; }
+    #map { height: 100vh; width: 100%; background-color: #e3f2fd; }
+
+    /* 右上操作パネル */
+    .filter-panel {
+      position: absolute; top: 10px; right: 10px; z-index: 10000;
+      background: rgba(255, 255, 255, 0.95); padding: 12px 14px;
+      border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); width: 280px;
+    }
+    .filter-group { margin-bottom: 10px; }
+    .filter-label { font-size: 11px; font-weight: bold; color: #5f6368; margin-bottom: 4px; }
+    .btn-group { display: flex; flex-wrap: wrap; gap: 4px; }
+    .filter-btn {
+      border: 1px solid #dadce0; background: #ffffff; padding: 4px 10px;
+      border-radius: 16px; cursor: pointer; font-size: 12px; font-weight: bold; color: #3c4043;
+    }
+    .filter-btn.active { background: #1a73e8; color: #ffffff; border-color: #1a73e8; }
+
+    .route-input { width: 100%; padding: 6px 8px; margin-bottom: 6px; border: 1px solid #dadce0; border-radius: 4px; font-size: 12px; box-sizing: border-box; }
+    .route-btn { width: 100%; padding: 6px; background: #34a853; color: white; border: none; border-radius: 4px; font-weight: bold; font-size: 12px; cursor: pointer; margin-bottom: 4px; }
+    .clear-btn { width: 100%; padding: 4px; background: #f1f3f4; color: #5f6368; border: 1px solid #dadce0; border-radius: 4px; font-size: 11px; cursor: pointer; }
+    .route-result { margin-top: 8px; padding: 8px; background: #e8f0fe; border-radius: 6px; font-size: 12px; color: #1a73e8; display: none; }
+
+    /* Leafletアイコンリセット */
+    .leaflet-marker-icon.reset-icon-container {
+      background: none !important; border: none !important; margin: 0 !important; padding: 0 !important; z-index: 10000 !important;
+    }
+
+    /* 丸型ネームマグネット */
+    .circle-label {
+      width: 50px; height: 50px; border-radius: 50%; box-sizing: border-box;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-weight: bold; font-size: 13px; box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      text-align: center; line-height: 1.1; cursor: pointer; position: relative;
+    }
+
+    .circle-label.idle { background: #ffffff; color: #202124; border: 3.5px solid #5f6368; }
+    .circle-label.heading { background: #fbbc04; color: #202124; border: 3.5px solid #ffffff; }
+    .circle-label.arrived { background: #1a73e8; color: #ffffff; border: 3.5px solid #ffffff; }
+
+    .info-top-badge {
+      position: absolute; top: -22px; left: 50%; transform: translateX(-50%);
+      background: rgba(32, 33, 36, 0.90); color: #ffffff; font-size: 10px; font-weight: bold;
+      padding: 2px 6px; border-radius: 10px; white-space: nowrap;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.3); pointer-events: none;
+      max-width: 110px; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    .tag-badge {
+      position: absolute; bottom: -8px; background: #d93025; color: #ffffff;
+      font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.4); font-weight: bold;
+    }
+
+    .city-label-text {
+      background: none !important; border: none !important; box-shadow: none !important;
+      font-size: 11px; font-weight: bold; color: #202124; white-space: nowrap; z-index: 100 !important;
+      text-shadow: 1px 1px 0 #fff, -1px 1px 0 #fff, 1px -1px 0 #fff, -1px -1px 0 #fff;
+    }
+    .leaflet-tooltip-center::before { display: none; }
+
+    .popup-card { font-size: 13px; line-height: 1.5; color: #3c4043; min-width: 180px; }
+    .popup-card h3 { margin: 0 0 6px 0; border-bottom: 2px solid #1a73e8; color: #202124; font-size: 15px; }
+  </style>
+</head>
+<body>
+
+  <!-- マップ表示エリア -->
+  <div id="map"></div>
+
+  <!-- 右上フィルター・ルート検索パネル -->
+  <div class="filter-panel" id="filter-panel">
+    <div class="filter-group">
+      <div class="filter-label">ステータス</div>
+      <div class="btn-group" id="status-filter-group">
+        <button class="filter-btn active" data-status="all">すべて</button>
+        <button class="filter-btn" data-status="arrived">到着</button>
+        <button class="filter-btn" data-status="heading">移動中</button>
+        <button class="filter-btn" data-status="idle">待機中</button>
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <div class="filter-label">班</div>
+      <div class="btn-group" id="team-filter-group">
+        <button class="filter-btn active" data-team="all">全班</button>
+        <button class="filter-btn" data-team="高木班">高木班</button>
+        <button class="filter-btn" data-team="森班">森班</button>
+        <button class="filter-btn" data-team="山中班">山中班</button>
+      </div>
+    </div>
+
+    <hr style="margin: 10px 0; border: 0; border-top: 1px solid #dadce0;">
+
+    <div class="filter-group">
+      <div class="filter-label">🚗 所要時間・ルート検索</div>
+      <input type="text" id="start-location" class="route-input" placeholder="出発地 (例: 世田谷区 または 作業員名)">
+      <input type="text" id="end-location" class="route-input" placeholder="目的地 (例: 横浜市港北区)">
+      <button id="calc-route-btn" class="route-btn">ルート・所要時間を検索</button>
+      <button id="clear-route-btn" class="clear-btn">ルート表示をクリア</button>
+
+      <div id="route-result" class="route-result">
+        <div><b>🚙 車での所要時間:</b> <span id="route-time" style="font-size:14px; font-weight:bold; color:#d93025;">-</span></div>
+        <div><b>📏 距離:</b> <span id="route-distance" style="font-weight:bold;">-</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const AUTO_REFRESH_INTERVAL = 900000;
+
+    const TEAM_MEMBERS = {
+      '高木班': ['築井', '大久保', '木場田', '高木', '松坂', '小松', '向井', '山田', '池村', '岸井', '松尾', '崎濱', '髙師', '田中', '仲川', '福本', '髙井'],
+      '森班': ['時田', '村松', '森', '富永', '遠田', '荻原', '渡邉', '染葉', '亀井', '比留間', '坂口', '添田'],
+      '山中班': ['島尻', '金綱', '岩崎', '山中', '吉河', '平野', '岸俊幸', '岸', '山下', '草橋', '村岡', '大磯', '稲嶋', '内田']
+    };
+
+    let map = null;
+    let markerGroup = L.layerGroup();
+    let routeLayer = L.layerGroup();
+    let currentStatusFilter = 'all';
+    let currentTeamFilter = 'all';
+    let globalGeoJsonData = null;
+    let startCoords = null;
+
+    // ページ読み込み時に即座に地図を初期化
+    document.addEventListener('DOMContentLoaded', function() {
+      initMap();
+
+      // ステータスフィルター
+      document.querySelectorAll('#status-filter-group .filter-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+          currentStatusFilter = this.getAttribute('data-status');
+          setActiveButton('status-filter-group', this);
+          renderMarkers();
+        });
+      });
+
+      // 班フィルター
+      document.querySelectorAll('#team-filter-group .filter-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+          currentTeamFilter = this.getAttribute('data-team');
+          setActiveButton('team-filter-group', this);
+          renderMarkers();
+        });
+      });
+
+      // ルート検索ボタン
+      document.getElementById('calc-route-btn').addEventListener('click', calculateRoute);
+      document.getElementById('clear-route-btn').addEventListener('click', clearRoute);
+    });
+
+    function getWorkerTeam(workerName) {
+      if (!workerName) return 'その他';
+      for (const [teamName, members] of Object.entries(TEAM_MEMBERS)) {
+        if (members.some(member => workerName.includes(member))) {
+          return teamName;
+        }
+      }
+      return 'その他';
+    }
+
+    function initMap() {
+      if (map) return;
+      map = L.map('map').setView([35.5800, 139.5500], 9);
+      markerGroup.addTo(map);
+      routeLayer.addTo(map);
+
+      const targetTargetCodes = ['13', '14', '11', '12', '23', '22', '21', '19', '10', '09', '08'];
+      const targetNames = ['東京都', '神奈川県', '埼玉県', '千葉県', '愛知県', '静岡県', '岐阜県', '山梨県', '群馬県', '栃木県', '茨城県'];
+
+      function getPrefColor(prefCode, prefName) {
+        if (prefName === '東京都' || prefCode === '13') return '#d97724';
+        if (prefName === '神奈川県' || prefCode === '14') return '#8e82b5';
+        if (prefName === '埼玉県' || prefCode === '11') return '#5b9bd5';
+        if (prefName === '千葉県' || prefCode === '12') return '#edb120';
+        if (prefName === '愛知県' || prefCode === '23') return '#70ad47';
+        if (prefName === '静岡県' || prefCode === '22') return '#4472c4';
+        if (prefName === '岐阜県' || prefCode === '21') return '#ffb6c1';
+        if (prefName === '山梨県' || prefCode === '19') return '#a5a5a5';
+        if (prefName === '群馬県' || prefCode === '10') return '#8c7b6b';
+        if (prefName === '栃木県' || prefCode === '09') return '#2e8b57';
+        if (prefName === '茨城県' || prefCode === '08') return '#cd853f';
+        return '#b0bec5';
+      }
+
+      const geojsonUrl = "https://raw.githubusercontent.com/smartnews-smri/japan-topography/main/data/municipality/geojson/s0010/N03-21_210101.json";
+
+      fetch(geojsonUrl)
+        .then(res => res.json())
+        .then(geojson => {
+          L.geoJSON(geojson, {
+            filter: function(feature) {
+              const p = feature.properties;
+              const prefCode = p.N03_007 ? p.N03_007.substring(0, 2) : '';
+              const prefName = p.N03_001 || '';
+              return targetNames.includes(prefName) || targetTargetCodes.includes(prefCode);
+            },
+            style: function(feature) {
+              const p = feature.properties;
+              const prefCode = p.N03_007 ? p.N03_007.substring(0, 2) : '';
+              const prefName = p.N03_001 || '';
+              return {
+                fillColor: getPrefColor(prefCode, prefName),
+                fillOpacity: 0.8,
+                color: '#ffffff',
+                weight: 1.2,
+                opacity: 0.9
+              };
+            },
+            onEachFeature: function(feature, layer) {
+              const p = feature.properties;
+              const cityName = p.N03_004 ? (p.N03_003 ? p.N03_003 + p.N03_004 : p.N03_004) : (p.N03_003 || p.N03_001);
+              if (cityName) {
+                layer.bindTooltip(cityName, {
+                  permanent: true, direction: 'center', className: 'city-label-text', pane: 'shadowPane'
+                });
+              }
+            }
+          }).addTo(map);
+
+          loadWorkerMarkers();
+          setInterval(loadWorkerMarkers, AUTO_REFRESH_INTERVAL);
+        });
+    }
+
+    function offsetCoordinates(lat, lng, index, total) {
+      if (total <= 1) return [lat, lng];
+      const radius = 0.0035; 
+      const angle = (index / total) * (2 * Math.PI);
+      return [
+        lat + (radius * Math.sin(angle)), 
+        lng + (radius * Math.cos(angle) * 1.2)
+      ];
+    }
+
+    function setActiveButton(groupId, targetBtn) {
+      const container = document.getElementById(groupId);
+      container.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      targetBtn.classList.add('active');
+    }
+
+    function loadWorkerMarkers() {
+      const baseUrl = "https://script.google.com/macros/s/AKfycbx4UowEKdq35HM_B8wJSKmwPEfbWjS5--_6lnPxjv8O-hE0C5pef_ZLrucM8hB5JZ3HpA/exec";
+      const gasUrl = baseUrl + (baseUrl.includes('?') ? '&' : '?') + "_t=" + new Date().getTime() + "&type=geojson";
+
+      fetch(gasUrl)
+        .then(res => res.json())
+        .then(data => {
+          globalGeoJsonData = data;
+          renderMarkers();
+        })
+        .catch(err => console.error("データ更新エラー:", err));
+    }
+
+    function renderMarkers() {
+      if (!globalGeoJsonData || !globalGeoJsonData.features) return;
+
+      markerGroup.clearLayers();
+
+      const filteredFeatures = globalGeoJsonData.features.filter(f => {
+        const p = f.properties;
+        const matchStatus = (currentStatusFilter === 'all') || (p.status === currentStatusFilter);
+        const workerTeam = getWorkerTeam(p.worker);
+        const matchTeam = (currentTeamFilter === 'all') || (workerTeam === currentTeamFilter);
+        return matchStatus && matchTeam;
+      });
+
+      const locationGroups = {};
+      filteredFeatures.forEach(f => {
+        const latKey = f.geometry.coordinates[1].toFixed(3);
+        const lngKey = f.geometry.coordinates[0].toFixed(3);
+        const key = `${latKey}_${lngKey}`;
+        
+        if (!locationGroups[key]) locationGroups[key] = [];
+        locationGroups[key].push(f);
+      });
+
+      Object.values(locationGroups).forEach(workers => {
+        const totalInGroup = workers.length;
+        workers.forEach((f, idx) => {
+          const [lat, lng] = offsetCoordinates(f.geometry.coordinates[1], f.geometry.coordinates[0], idx, totalInGroup);
+          const p = f.properties;
+          const displayName = p.worker ? p.worker.substring(0, 3) : '';
+          
+          const rawMemo = (p.memo || '').toString().trim();
+          const topInfoHtml = rawMemo ? `<div class="info-top-badge" title="${rawMemo}">${rawMemo}</div>` : '';
+          const tagHtml = p.specialTag ? `<div class="tag-badge">${p.specialTag}</div>` : '';
+
+          const customIcon = L.divIcon({
+            className: 'reset-icon-container',
+            html: `
+              <div class="circle-label ${p.status}">
+                ${topInfoHtml}
+                <div style="pointer-events:none;">${displayName}</div>
+                ${tagHtml}
+              </div>`,
+            iconSize: [50, 50],
+            iconAnchor: [25, 25],
+            popupAnchor: [0, -25]
+          });
+
+          const popupContent = `
+            <div class="popup-card">
+              <h3>${p.worker}</h3>
+              <div><b>📍 現在地:</b> ${p.area}</div>
+              ${p.specialTag ? `<div style="margin-top:2px;"><b>🏷 状態:</b> <span style="color:#d93025; font-weight:bold;">${p.specialTag}</span></div>` : ''}
+              
+              <div style="margin-top:6px; background:#fce8e6; color:#c5221f; padding:4px 6px; border-radius:4px; font-weight:bold; font-size:12px; border:1px solid #f5c2c7;">
+                🚫 NG地域: ${p.ngArea || p.ng_area || 'なし'}
+              </div>
+
+              <button class="set-start-btn" data-worker="${p.worker}" data-lat="${lat}" data-lng="${lng}" style="width:100%; margin-top:8px; padding:5px; background:#1a73e8; color:white; border:none; border-radius:4px; font-weight:bold; font-size:11px; cursor:pointer;">🚗 ここを出発地にする</button>
+
+              <hr style="margin:8px 0; border:0; border-top:1px solid #dadce0;">
+              <div><b>📊 本日の実績:</b></div>
+              <div>・新規件数: <b>${p.newCount || 0}</b> 件</div>
+              <div>・案件対応回数: <b>${p.totalCount || 0}</b> 回</div>
+              <div>・階下漏水回数: <b>${p.kaikaCount || 0}</b> 回</div>
+              <hr style="margin:8px 0; border:0; border-top:1px solid #dadce0;">
+              <div><b>⭐ 得意案件:</b> ${p.tokuiName || 'なし'} (${p.tokuiCount || 0}回)</div>
+              <div><b>🗓 月間実績:</b> 件数 ${p.mTotal || 0}回 / 階下漏水 ${p.mKaika || 0}回</div>
+              ${rawMemo ? `<div style="margin-top:6px; background:#fef7e0; padding:4px 6px; border-radius:3px; border:1px solid #feefc3;"><b>📝 メモ:</b> ${rawMemo}</div>` : ''}
+            </div>
+          `;
+
+          const marker = L.marker([lat, lng], { icon: customIcon, zIndexOffset: 99999 })
+            .addTo(markerGroup)
+            .bindPopup(popupContent);
+
+          marker.on('popupopen', function() {
+            const btn = document.querySelector('.set-start-btn');
+            if (btn) {
+              btn.onclick = function() {
+                setStartFromWorker(this.getAttribute('data-worker'), parseFloat(this.getAttribute('data-lat')), parseFloat(this.getAttribute('data-lng')));
+              };
+            }
+          });
+        });
+      });
+    }
+
+    function setStartFromWorker(workerName, lat, lng) {
+      document.getElementById('start-location').value = workerName;
+      startCoords = [lat, lng];
+      map.closePopup();
+    }
+
+    async function geocode(locationName) {
+      if (globalGeoJsonData && globalGeoJsonData.features) {
+        const found = globalGeoJsonData.features.find(f => f.properties.worker && f.properties.worker.includes(locationName));
+        if (found) {
+          return [found.geometry.coordinates[1], found.geometry.coordinates[0]];
+        }
+      }
+
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(locationName)}&countrycodes=jp`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+      }
+      return null;
+    }
+
+    async function calculateRoute() {
+      const startText = document.getElementById('start-location').value.trim();
+      const endText = document.getElementById('end-location').value.trim();
+
+      if (!startText || !endText) {
+        alert("出発地と目的地の両方を入力してください。");
+        return;
+      }
+
+      let start = startCoords;
+      if (!start || document.getElementById('start-location').getAttribute('data-last') !== startText) {
+        start = await geocode(startText);
+      }
+      const end = await geocode(endText);
+
+      if (!start || !end) {
+        alert("位置情報が見つかりませんでした。");
+        return;
+      }
+
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
+
+      try {
+        const res = await fetch(osrmUrl);
+        const data = await res.json();
+
+        if (data.routes && data.routes.length > 0) {
+          const route = data.routes[0];
+          document.getElementById('route-time').innerText = `約 ${Math.round(route.duration / 60)} 分`;
+          document.getElementById('route-distance').innerText = `${(route.distance / 1000).toFixed(1)} km`;
+          document.getElementById('route-result').style.display = 'block';
+
+          routeLayer.clearLayers();
+          const routeCoordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
+          const polyline = L.polyline(routeCoordinates, { color: '#1a73e8', weight: 6, opacity: 0.8 }).addTo(routeLayer);
+          map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+        }
+      } catch (err) {
+        console.error("ルート検索エラー:", err);
+      }
+    }
+
+    function clearRoute() {
+      routeLayer.clearLayers();
+      document.getElementById('start-location').value = '';
+      document.getElementById('end-location').value = '';
+      document.getElementById('route-result').style.display = 'none';
+      startCoords = null;
+    }
+  </script>
+</body>
+</html>
